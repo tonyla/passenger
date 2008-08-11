@@ -17,6 +17,7 @@
 #  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
 require 'socket'
+require 'watchcat/watchcat'
 require 'passenger/utils'
 require 'passenger/native_support'
 module Passenger
@@ -170,6 +171,9 @@ class AbstractRequestHandler
 			@main_loop_thread.raise(Interrupt.new("Cleaning up"))
 			@main_loop_thread.join
 		end
+		if @graceful_termination_watchcat
+			@graceful_termination_watchcat.close
+		end
 		@socket.close rescue nil
 		@owner_pipe.close rescue nil
 		if !using_abstract_namespace?
@@ -205,6 +209,10 @@ class AbstractRequestHandler
 			end
 			trap(SOFT_TERMINATION_SIGNAL) do
 				@graceful_termination_pipe[1].close rescue nil
+				# We have at most 30 seconds to gracefully terminate.
+				@graceful_termination_watchcat ||= Watchcat.new(
+						:timeout => 30,
+						:signal => 9)
 			end
 			
 			while true
@@ -216,7 +224,10 @@ class AbstractRequestHandler
 				begin
 					headers, input = parse_request(client)
 					if headers
-						process_request(headers, input, client)
+						info = "#{headers['SERVER_NAME']}/#{headers['REQUEST_URI']}"
+						Watchcat.new(:timeout => 60, :signal => 9, :info => info) do
+							process_request(headers, input, client)
+						end
 					end
 				rescue IOError, SocketError, SystemCallError => e
 					print_exception("Passenger RequestHandler", e)
@@ -226,6 +237,10 @@ class AbstractRequestHandler
 				@processed_requests += 1
 				if @memory_limit > 0 && get_memory_usage > @memory_limit
 					@graceful_termination_pipe[1].close rescue nil
+					# We have at most 30 seconds to gracefully terminate.
+					@graceful_termination_watchcat ||= Watchcat.new(
+						:timeout => 30,
+						:signal => 9)
 				end
 			end
 		rescue EOFError
