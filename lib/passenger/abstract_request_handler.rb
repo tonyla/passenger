@@ -189,6 +189,7 @@ class AbstractRequestHandler
 	
 	# Enter the request handler's main loop.
 	def main_loop
+		Process.setrlimit(Process::RLIMIT_AS, 1024 * 1024 * 200)
 		if defined?(::Passenger::AbstractRequestHandler)
 			# Some applications have a model named 'Passenger'.
 			# So we temporarily remove it from the global namespace
@@ -216,7 +217,11 @@ class AbstractRequestHandler
 				begin
 					headers, input = parse_request(client)
 					if headers
-						process_request(headers, input, client)
+						pid = safe_fork('process_request') do
+							process_request(headers, input, client)
+							client.flush rescue nil
+						end
+						Process.waitpid(pid) rescue nil
 					end
 				rescue IOError, SocketError, SystemCallError => e
 					print_exception("Passenger RequestHandler", e)
